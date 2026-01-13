@@ -1,0 +1,255 @@
+
+<!DOCTYPE html>
+<html lang="no">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Håndball Logger</title>
+<style>
+  :root{--bg:#0f172a;--panel:#111827;--accent:#06b6d4;--text:#f3f4f6;--muted:#9ca3af;--danger:#ef4444;--ok:#22c55e;--warn:#f59e0b;}
+  body{font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif;background:var(--bg);color:var(--text);margin:0}
+  header{padding:12px 16px;background:#0b1220;display:flex;gap:12px;align-items:center}
+  h1{font-size:18px;margin:0} main{padding:16px;display:grid;gap:16px}
+  .card{background:var(--panel);border-radius:10px;padding:12px}
+  .row{display:flex;gap:12px;flex-wrap:wrap;align-items:center}
+  .col{display:grid;gap:8px} label{font-size:14px;color:var(--muted)}
+  input,select,button{padding:8px 10px;border-radius:6px;border:1px solid #1f2937;background:#0f172a;color:var(--text)}
+  button{background:#0ea5e9;border:none;cursor:pointer}
+  button.secondary{background:#374151} button.danger{background:var(--danger)} button.ok{background:var(--ok)} button.warn{background:var(--warn)}
+  .list{display:grid;gap:6px}
+  .player-item{display:flex;justify-content:space-between;align-items:center;background:#0b1220;padding:6px 8px;border-radius:8px}
+  .star{cursor:pointer;color:#fbbf24;font-size:18px}
+  .muted{color:var(--muted)}
+  .pill{display:inline-block;padding:6px 10px;border-radius:20px;background:#1f2937;cursor:pointer;user-select:none}
+  .pill.active{background:var(--accent)}
+  .event-list{max-height:220px;overflow:auto;border:1px solid #1f2937;border-radius:8px}
+  .event-item{display:flex;justify-content:space-between;gap:8px;padding:6px 8px;border-bottom:1px solid #1f2937}
+  .timer{font-size:42px;font-weight:700;letter-spacing:2px}
+  .summary-table{width:100%;border-collapse:collapse}
+  .summary-table th,.summary-table td{border-bottom:1px solid #1f2937;padding:6px 8px;text-align:left}
+  /* shooter highlight */
+  .player-item .name{cursor:pointer}
+  .player-item .name.selected{color:#06b6d4;font-weight:700;text-decoration:underline}
+  /* SVG court box */
+  .court-wrap{display:grid;gap:8px}
+  .court{background:#0b1220;border:1px solid #1f2937;border-radius:10px;padding:8px}
+  .zone-badge{display:inline-block;padding:4px 8px;border-radius:6px;background:#1f2937}
+</style>
+</head>
+<body>
+<header>
+  <h1>Håndball Logger</h1>
+  <span class="muted" id="matchTitle"></span>
+  <div style="margin-left:auto;">
+    <button class="secondary" id="btnDownloadCsv">Last ned CSV</button>
+  </div>
+</header>
+
+<main>
+
+  <!-- Setup -->
+  <section class="card" id="viewSetup">
+    <h2>Oppsett</h2>
+    <div class="row">
+      <div class="col">
+        <label>Serie</label>
+        <select id="series">
+          <option value="Lokal">Lokal</option>
+          <option value="Region">Region</option>
+          <option value="Annet">Annet</option>
+        </select>
+      </div>
+      <div class="col">
+        <label>Motstander</label>
+        <input type="text" id="opponent" placeholder="Motstanderlag"/>
+      </div>
+      <div class="col">
+        <label>Antall omganger</label>
+        <input type="number" id="halves" min="1" max="4" value="2"/>
+      </div>
+      <div class="col">
+        <label>Minutter per omgang</label>
+        <input type="number" id="minutesPerHalf" min="1" max="60" value="25"/>
+      </div>
+    </div>
+    <p class="muted">For “Lokal” og “Region” settes automatisk 2×25 min. “Annet” kan tilpasses.</p>
+
+    <h3>Velg spillere til kampen</h3>
+    <div class="list" id="rosterSelect"></div>
+
+    <div class="row"><button id="btnStartMatch">Start kamp</button></div>
+  </section>
+
+  <!-- Control -->
+  <section class="card" id="viewControl" style="display:none;">
+    <div class="row" style="justify-content:space-between;">
+      <div>
+        <h2>Omgang <span id="halfNum">1</span> / <span id="halfTotal">2</span></h2>
+        <div class="timer" id="timerDisplay">00:00</div>
+        <div class="row">
+          <button id="btnTimerStart">Start</button>
+          <button class="secondary" id="btnTimerStop">Stopp</button>
+          <button class="warn" id="btnNextHalf">Neste omgang</button>
+          <button class="secondary" id="btnUndo">Angre siste</button>
+        </div>
+      </div>
+      <div style="min-width:300px;">
+        <h3>På banen (stjernemerk)</h3>
+        <div class="list" id="onCourtList"></div>
+      </div>
+    </div>
+
+    <!-- Court with click zones -->
+    <div class="card court">
+      <div class="row" style="justify-content:space-between;align-items:center;">
+        <div class="row">
+          <span>Aktiv sone:</span>
+          <span id="targetField" class="pill active">Utespiller</span>
+          <span id="targetGK" class="pill">Målvakt</span>
+        </div>
+        <div class="row">
+          <span class="zone-badge">Utespiller: <strong id="badgeField">–</strong></span>
+          <span class="zone-badge">Målvakt: <strong id="badgeGK">–</strong></span>
+        </div>
+      </div>
+      <div class="court-wrap">
+        <svg id="courtSvg" viewBox="0 0 600 360" style="width:100%;height:auto;display:block;background:#6aa7d9;border-radius:8px;">
+          <!-- Half-court baseline -->
+          <rect x="0" y="0" width="600" height="360" fill="#6aa7d9"/>
+          <!-- Goal area (dark) -->
+          <path d="M120,0 A180,180 0 0 1 480,0 L480,60 L120,60 Z" fill="#0d567e"/>
+          <!-- 6m arc -->
+          <path d="M150,0 A150,150 0 0 1 450,0" stroke="#adcee6" stroke-width="6" fill="none"/>
+          <!-- 9m dashed arc -->
+          <path d="M90,0 A210,210 0 0 1 510,0" stroke="#e7eef6" stroke-width="3" fill="none" stroke-dasharray="8 8"/>
+          <!-- Guide lines resembling your diagram -->
+          <line x1="300" y1="0" x2="110" y2="360" stroke="#b80d3a" stroke-width="3"/>
+          <line x1="300" y1="0" x2="200" y2="360" stroke="#b80d3a" stroke-width="3"/>
+          <line x1="300" y1="0" x2="300" y2="360" stroke="#b80d3a" stroke-width="3"/>
+          <line x1="300" y1="0" x2="400" y2="360" stroke="#b80d3a" stroke-width="3"/>
+          <line x1="300" y1="0" x2="490" y2="360" stroke="#b80d3a" stroke-width="3"/>
+          <!-- Labels (visual only) -->
+          <g fill="#ffffff" font-size="28" font-weight="700">
+            <text x="70" y="140">1</text>
+            <text x="210" y="145">2</text>
+            <text x="292" y="155">3</text>
+            <text x="380" y="145">4</text>
+            <text x="520" y="140">5</text>
+            <text x="90" y="250">6</text>
+            <text x="285" y="285">7</text>
+            <text x="495" y="250">8</text>
+          </g>
+          <!-- Click marker -->
+          <circle id="clickDot" cx="-20" cy="-20" r="6" fill="#fbbf24" stroke="#111827" stroke-width="2"/>
+        </svg>
+        <div class="row">
+          <span class="pill" id="btnKontring">Kontring</span>
+          <span class="pill" id="btn7m">7m</span>
+          <span class="muted">Klikk på banen for å velge sone.</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Action panels -->
+    <div class="row">
+      <div class="card" style="flex:1;">
+        <h3>Målvakt</h3>
+        <p class="muted">Velg GK (stjerne) og sone, så registrer hendelse.</p>
+        <div class="row">
+          <button id="btnGkSave">Redning</button>
+          <button id="btnGkGoal" class="danger">Mål (inn)</button>
+        </div>
+      </div>
+      <div class="card" style="flex:2;">
+        <h3>Utespiller</h3>
+        <div class="row">
+          <label for="assistSelect">Assist</label>
+          <select id="assistSelect"><option>Ingen assist</option></select>
+        </div>
+        <div class="row">
+          <button id="btnFieldGoal" class="ok">Mål</button>
+          <button id="btnFieldMiss" class="warn">Bom</button>
+          <button id="btnFieldTurnover" class="danger">Teknisk</button>
+        </div>
+      </div>
+      <div class="card" style="flex:1;">
+        <h3>Hendelser</h3>
+        <div class="event-list" id="eventList"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Oppsummering</h3>
+      <div class="row">
+        <button class="secondary" data-scope="1" id="btnScope1">1. omgang</button>
+        <button class="secondary" data-scope="2" id="btnScope2">2. omgang</button>
+        <button class="secondary" data-scope="all" id="btnScopeAll">Hele kamp</button>
+      </div>
+      <table class="summary-table" id="summaryTable">
+        <thead>
+          <tr><th>Spiller</th><th>Rolle</th><th>Mål</th><th>Bom</th><th>Teknisk</th><th>GK Redninger</th><th>GK Mål imot</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+</main>
+
+<script>
+/*** Configuration ***/
+const WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbyt_7aCKeb_eqL__FbHdoK0oslfQJF0f-EItC0tuohXlkj_HkEsU2cn6MrPlluzIkG0/exec';
+
+/*** Players ***/
+const ALL_PLAYERS = [
+  "Jacob","Patrick F","Jonas","Mats","Theodor","Ulrik","Loke","Sebastian","Mateo","Markus",
+  "Demyd","Theo","Stokka","Fabian","Nicolay","Felix","Ole","Patrick W.","Oskar","Adrian A","Adrian B"
+];
+const GOALKEEPERS = new Set(["Theo","Ulrik","Patrick F"]);
+
+/*** Zones ***/
+const ZONES = ["Sone 1","Sone 2","Sone 3","Sone 4","Sone 5","Sone 6","Sone 7","Sone 8","Kontring","7m"];
+
+/*** State ***/
+let match = { id:null, series:"Lokal", halves:2, minutesPerHalf:25, opponent:"", roster:[] };
+let half = 1;
+let timerRunning = false, halfStartEpoch = null, elapsedPausedMs = 0;
+let events = [];               // local cache
+let starred = new Set();       // on-court
+let currentShooter = null;     // selected shooter (field)
+let selectedZoneField = null;  // last picked zone for field
+let selectedZoneGK = null;     // last picked zone for GK
+let activeZoneTarget = 'Field';// which target the court click updates
+
+/*** Utils ***/
+function fmtMMSS(ms, limitMin){ const t=Math.floor(ms/1000); let m=Math.floor(t/60), s=t%60; if(m>limitMin){m=limitMin;s=0;} return `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`; }
+function nowMMSS(){ if(!halfStartEpoch) return "00:00"; const ms=(timerRunning?Date.now():halfStartEpoch)-halfStartEpoch+elapsedPausedMs; return fmtMMSS(ms, match.minutesPerHalf); }
+function sortPlayersForOnCourt(list){
+  const gkStar = list.filter(p => p.role==='GK' && starred.has(p.name));
+  const fieldStar = list.filter(p => p.role!=='GK' && starred.has(p.name)).sort((a,b)=>a.name.localeCompare(b.name));
+  const rest = list.filter(p => !starred.has(p.name)).sort((a,b)=>a.name.localeCompare(b.name));
+  return [...gkStar, ...fieldStar, ...rest];
+}
+function postJSON(action, data){
+  return fetch(WEB_APP_URL, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({action, ...data}) })
+    .then(r => r.json());
+}
+function addEventLocal(ev){ events.push(ev); renderEvents(); renderSummary(); }
+function removeEventLocal(id){ events = events.filter(e=>e.event_id!==id); renderEvents(); renderSummary(); }
+
+/*** Setup UI ***/
+function renderRosterSelect(){
+  const c=document.getElementById('rosterSelect'); c.innerHTML='';
+  const sorted=[...ALL_PLAYERS].sort((a,b)=>a.localeCompare(b));
+  sorted.forEach(name=>{
+    const role = GOALKEEPERS.has(name)?'Målvakt':'Utespiller';
+    const row=document.createElement('div'); row.className='player-item';
+    row.innerHTML = `<div><input type="checkbox" id="chk_${name}"/><label for="chk_${name}">${name} <span class="muted">(${role})</span></label></div>`;
+    c.appendChild(row);
+  });
+}
+function renderOnCourt(){
+  const list=sortPlayersForOnCourt(match.roster);
+  const c=document.getElementById('onCourtList'); c.innerHTML='';
+  list.forEach(p=>{
+    const row=document.createElement('div'); row.className='player-item';
