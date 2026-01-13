@@ -196,6 +196,7 @@
 
 </main>
 
+
 <script>
 /*** Configuration ***/
 const WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbyt_7aCKeb_eqL__FbHdoK0oslfQJF0f-EItC0tuohXlkj_HkEsU2cn6MrPlluzIkG0/exec';
@@ -207,49 +208,95 @@ const ALL_PLAYERS = [
 ];
 const GOALKEEPERS = new Set(["Theo","Ulrik","Patrick F"]);
 
-/*** Zones ***/
-const ZONES = ["Sone 1","Sone 2","Sone 3","Sone 4","Sone 5","Sone 6","Sone 7","Sone 8","Kontring","7m"];
+/*** Utility: make safe IDs (no spaces/dots) ***/
+function makeSafeId(name){ return 'chk_' + name.replace(/[^a-z0-9_-]/gi, '_'); }
 
-/*** State ***/
+/*** State (keep your existing state around these if present) ***/
 let match = { id:null, series:"Lokal", halves:2, minutesPerHalf:25, opponent:"", roster:[] };
-let half = 1;
-let timerRunning = false, halfStartEpoch = null, elapsedPausedMs = 0;
-let events = [];               // local cache
-let starred = new Set();       // on-court
-let currentShooter = null;     // selected shooter (field)
-let selectedZoneField = null;  // last picked zone for field
-let selectedZoneGK = null;     // last picked zone for GK
-let activeZoneTarget = 'Field';// which target the court click updates
+let starred = new Set();
+let currentShooter = null;
 
-/*** Utils ***/
-function fmtMMSS(ms, limitMin){ const t=Math.floor(ms/1000); let m=Math.floor(t/60), s=t%60; if(m>limitMin){m=limitMin;s=0;} return `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`; }
-function nowMMSS(){ if(!halfStartEpoch) return "00:00"; const ms=(timerRunning?Date.now():halfStartEpoch)-halfStartEpoch+elapsedPausedMs; return fmtMMSS(ms, match.minutesPerHalf); }
-function sortPlayersForOnCourt(list){
-  const gkStar = list.filter(p => p.role==='GK' && starred.has(p.name));
-  const fieldStar = list.filter(p => p.role!=='GK' && starred.has(p.name)).sort((a,b)=>a.name.localeCompare(b.name));
-  const rest = list.filter(p => !starred.has(p.name)).sort((a,b)=>a.name.localeCompare(b.name));
-  return [...gkStar, ...fieldStar, ...rest];
-}
-function postJSON(action, data){
-  return fetch(WEB_APP_URL, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({action, ...data}) })
-    .then(r => r.json());
-}
-function addEventLocal(ev){ events.push(ev); renderEvents(); renderSummary(); }
-function removeEventLocal(id){ events = events.filter(e=>e.event_id!==id); renderEvents(); renderSummary(); }
-
-/*** Setup UI ***/
+/*** Render the roster list (checkboxes) ***/
 function renderRosterSelect(){
-  const c=document.getElementById('rosterSelect'); c.innerHTML='';
-  const sorted=[...ALL_PLAYERS].sort((a,b)=>a.localeCompare(b));
-  sorted.forEach(name=>{
-    const role = GOALKEEPERS.has(name)?'Målvakt':'Utespiller';
-    const row=document.createElement('div'); row.className='player-item';
-    row.innerHTML = `<div><input type="checkbox" id="chk_${name}"/><label for="chk_${name}">${name} <span class="muted">(${role})</span></label></div>`;
-    c.appendChild(row);
+  const container = document.getElementById('rosterSelect');
+  if (!container) return; // defensive
+  container.innerHTML = '';
+  const sorted = [...ALL_PLAYERS].sort((a,b)=>a.localeCompare(b));
+  sorted.forEach(name => {
+    const roleLabel = GOALKEEPERS.has(name) ? 'Målvakt' : 'Utespiller';
+    const id = makeSafeId(name);
+    const row = document.createElement('div');
+    row.className = 'player-item';
+    row.innerHTML = `
+      <div>
+        <input type="checkbox" id="${id}" data-name="${name}"/>
+        <label for="${id}">${name} <span class="muted">(${roleLabel})</span></label>
+      </div>
+    `;
+    container.appendChild(row);
   });
 }
-function renderOnCourt(){
-  const list=sortPlayersForOnCourt(match.roster);
-  const c=document.getElementById('onCourtList'); c.innerHTML='';
-  list.forEach(p=>{
-    const row=document.createElement('div'); row.className='player-item';
+
+/*** Build roster from checked boxes when starting match ***/
+function getSelectedRoster(){
+  const selected = [];
+  document.querySelectorAll('#rosterSelect input[type=checkbox]:checked').forEach(chk => {
+    const name = chk.dataset.name; // reliable, no spaces in the id required
+    selected.push({ name, role: GOALKEEPERS.has(name) ? 'GK' : 'Field' });
+  });
+  return selected;
+}
+
+/*** Call once on load ***/
+renderRosterSelect();
+
+/*** (Keep or update your existing Start button handler to use getSelectedRoster()) ***/
+// Example integration:
+document.getElementById('btnStartMatch')?.addEventListener('click', async () => {
+  const seriesSel = document.getElementById('series').value;
+  const opponent = (document.getElementById('opponent').value || '').trim();
+  const halves = Number(document.getElementById('halves').value);
+  const minutesPerHalf = Number(document.getElementById('minutesPerHalf').value);
+  const roster = getSelectedRoster();
+
+  if (seriesSel === 'Lokal' || seriesSel === 'Region') {
+    // enforce 2x25 for these
+    document.getElementById('halves').value = 2;
+    document.getElementById('minutesPerHalf').value = 25;
+  }
+
+  if (roster.length === 0) { alert('Velg minst én spiller.'); return; }
+
+  match.series = seriesSel;
+  match.opponent = opponent;
+  match.halves = Number(document.getElementById('halves').value);
+  match.minutesPerHalf = Number(document.getElementById('minutesPerHalf').value);
+  match.roster = roster;
+
+  // Create match in Sheets (if WEB_APP_URL is valid)
+  try {
+    const res = await fetch(WEB_APP_URL, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({
+        action: 'createMatch',
+        series: match.series, halves: match.halves, minutes_per_half: match.minutesPerHalf,
+        opponent: match.opponent, roster
+      })
+    }).then(r => r.json());
+    if (!res.ok) throw new Error(res.error || 'Ukjent feil');
+    match.id = res.match_id;
+  } catch (err) {
+    console.warn('CreateMatch failed; continuing locally:', err);
+    match.id = match.id || ('local-' + Date.now());
+  }
+
+  // Swap to control view
+  document.getElementById('matchTitle').textContent =
+    `${match.series}: ${match.opponent} — ${match.halves}×${match.minutesPerHalf}min`;
+  document.getElementById('halfTotal').textContent = String(match.halves);
+  document.getElementById('viewSetup').style.display = 'none';
+  document.getElementById('viewControl').style.display = '';
+  renderOnCourt();          // make sure this exists in your script
+  updateAssistOptions();    // make sure this exists in your script
+});
+</script>
